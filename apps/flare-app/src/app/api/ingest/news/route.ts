@@ -1,7 +1,19 @@
-import { NextResponse } from 'next/server';
+import { NextResponse, NextRequest } from 'next/server';
 import { Redis } from '@upstash/redis';
 
 export const runtime = 'edge'; // Opt in to Vercel Edge Runtime
+
+// Basic interface for NewsAPI articles for type safety
+interface Article {
+  source?: { id?: string | null; name?: string };
+  author?: string | null;
+  title?: string | null;
+  description?: string | null;
+  url?: string | null;
+  urlToImage?: string | null;
+  publishedAt?: string | null;
+  content?: string | null;
+}
 
 const NEWS_API_KEY = process.env.NEWS_API_KEY;
 const NEWS_API_ENDPOINT = 'https://newsapi.org/v2/everything'; // Example: everything endpoint
@@ -30,69 +42,68 @@ const REDIS_STREAM_KEY = process.env.REDIS_MENTIONS_STREAM_KEY || 'mentions_stre
  * Fetches news articles from NewsAPI based on a query.
  * This endpoint will be triggered by a Vercel Cron Job.
  */
-export async function GET(request: Request) {
+export async function GET(request: NextRequest) {
   if (!NEWS_API_KEY) {
     return NextResponse.json({ error: 'NEWS_API_KEY is not configured' }, { status: 500 });
   }
-  if (!redis) {
-    return NextResponse.json({ error: 'Redis client is not initialized. Check Upstash Redis configuration.'}, { status: 500 });
+  // Redis is optional for immediate return, but we'll still try to push if configured
+  // if (!redis) {
+  //   return NextResponse.json({ error: 'Redis client is not initialized.'}, { status: 500 });
+  // }
+
+  const searchParams = request.nextUrl.searchParams;
+  const keyword = searchParams.get('keyword');
+
+  if (!keyword) {
+    return NextResponse.json({ error: 'Keyword parameter is required' }, { status: 400 });
   }
 
-  // TODO: Define your query parameters. For now, a placeholder.
-  // Example: searching for "artificial intelligence" articles in English, sorted by relevancy
   const queryParams = new URLSearchParams({
-    q: 'artificial intelligence',
+    q: keyword,
     language: 'en',
-    sortBy: 'relevancy',
+    sortBy: 'relevancy', // or 'publishedAt' for newest first
     apiKey: NEWS_API_KEY,
-    pageSize: '10' // Fetch fewer articles for testing/demo; adjust as needed
+    pageSize: '20' // Adjust as needed
   });
 
   try {
     const newsApiResponse = await fetch(`${NEWS_API_ENDPOINT}?${queryParams.toString()}`);
-    
     if (!newsApiResponse.ok) {
       const errorData = await newsApiResponse.json();
       console.error('NewsAPI Error:', errorData);
       return NextResponse.json({ error: 'Failed to fetch news from NewsAPI', details: errorData }, { status: newsApiResponse.status });
     }
-
     const newsData = await newsApiResponse.json();
     const articles = newsData.articles || [];
 
-    if (articles.length === 0) {
-      return NextResponse.json({ message: 'No new articles found.' }, { status: 200 });
+    // Asynchronously push to Redis if configured, but don't wait for it to return response to client
+    if (redis && articles.length > 0) {
+      const pushToRedisPromises = articles.map((article: Article) => {
+        const messagePayload: Record<string, string> = {
+          search_keyword: keyword, // IMPORTANT: include the search keyword
+          source: article.source?.name || 'Unknown',
+          author: article.author || 'Unknown',
+          title: article.title || '',
+          description: article.description || '',
+          url: article.url || '',
+          urlToImage: article.urlToImage || '',
+          publishedAt: article.publishedAt || new Date().toISOString(),
+          content: article.content || '',
+        };
+        return redis!.xadd(REDIS_STREAM_KEY, '*', messagePayload)
+          .catch(redisError => console.error('Failed to push article to Redis Stream:', article.title, redisError));
+      });
+      // We don't await these promises here to ensure a fast response to the client
+      Promise.allSettled(pushToRedisPromises).then(results => {
+        const successfulPushes = results.filter(r => r.status === 'fulfilled').length;
+        console.log(`Asynchronously pushed ${successfulPushes}/${articles.length} articles for keyword '${keyword}' to Redis.`);
+      });
     }
 
-    let articlesPushed = 0;
-    for (const article of articles) {
-      // Construct the message payload for Redis Stream
-      // Ensure all values are strings or convert them appropriately
-      const messagePayload: Record<string, string> = {
-        source: article.source?.name || 'Unknown',
-        author: article.author || 'Unknown',
-        title: article.title || '',
-        description: article.description || '',
-        url: article.url || '',
-        urlToImage: article.urlToImage || '',
-        publishedAt: article.publishedAt || new Date().toISOString(),
-        content: article.content || '',
-      };
-      try {
-        // XADD stream_key * field1 value1 [field2 value2 ...]
-        // Using '*' for auto-generated ID
-        await redis.xadd(REDIS_STREAM_KEY, '*', messagePayload);
-        articlesPushed++;
-      } catch (redisError) {
-        console.error('Failed to push article to Redis Stream:', article.title, redisError);
-        // Decide on error handling: continue, retry, or stop and report?
-      }
-    }
-
-    return NextResponse.json({ message: `Successfully fetched ${articles.length} articles. Pushed ${articlesPushed} to Redis stream '${REDIS_STREAM_KEY}'.` }, { status: 200 });
+    return NextResponse.json({ articles }, { status: 200 });
 
   } catch (error) {
-    console.error('Error in ingestion function:', error);
-    return NextResponse.json({ error: 'Internal Server Error processing news', details: error instanceof Error ? error.message : String(error) }, { status: 500 });
+    console.error('Error in news fetching/processing function:', error);
+    return NextResponse.json({ error: 'Internal Server Error', details: error instanceof Error ? error.message : String(error) }, { status: 500 });
   }
 } 

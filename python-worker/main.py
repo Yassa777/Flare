@@ -110,41 +110,45 @@ def filter_noise(article: dict) -> bool:
     return False # Not noise
 
 async def process_message(message_id: str, article_data: dict):
-    print(f"Processing message {message_id}: {article_data.get('title')}")
+    # article_data is the message payload from Redis stream
+    title = article_data.get('title', '[No Title]')
+    search_keyword = article_data.get("search_keyword", "[Unknown Keyword]") # Get the search keyword
+    print(f"Processing message {message_id} for keyword '{search_keyword}': {title}")
+
+    # Remove search_keyword from article_data if you don't want it in raw_data or if it might conflict
+    # Or ensure your raw_data field in Supabase can handle it / it's fine as is.
+    # For now, we assume it's fine to be part of the article_data dict that goes into raw_data.
 
     if filter_noise(article_data):
-        print(f"Article '{article_data.get('title')}' filtered out as noise.")
+        print(f"Article '{title}' (keyword: '{search_keyword}') filtered out as noise.")
         return
 
     sentiment_text = article_data.get('description') or article_data.get('title') or ""
     sentiment = await get_sentiment(sentiment_text)
-    print(f"Sentiment for '{article_data.get('title')}': {sentiment}")
+    print(f"Sentiment for '{title}' (keyword: '{search_keyword}'): {sentiment}")
 
     if supabase_client:
         enriched_mention = {
+            "keyword": search_keyword,
             "source": article_data.get("source"),
             "author": article_data.get("author"),
-            "title": article_data.get("title"),
+            "title": title,
             "description": article_data.get("description"),
             "url": article_data.get("url"),
-            "image_url": article_data.get("urlToImage"), # Ensure column name matches Supabase table
+            "image_url": article_data.get("urlToImage"),
             "published_at": article_data.get("publishedAt"),
             "content_preview": (article_data.get("content") or "")[:255],
             "sentiment_label": sentiment.get("label"),
             "sentiment_score": sentiment.get("score"),
-            "raw_data": article_data 
+            "raw_data": article_data
         }
         try:
-            # TODO: Define your Supabase table name, e.g., 'mentions'
-            # Make sure your table `mentions` exists in Supabase and columns match `enriched_mention` keys.
             data_response = await supabase_client.table("mentions").insert(enriched_mention).execute()
-            # Check Supabase client docs for actual response structure. 
-            # data_response.data should contain the inserted rows if successful for v2+
-            print(f"Inserted into Supabase. Response data: {data_response.data if hasattr(data_response, 'data') else 'No data in response'}")
+            print(f"Inserted into Supabase for keyword '{search_keyword}'. Response data: {data_response.data if hasattr(data_response, 'data') else 'No data in response'}")
         except Exception as e:
-            print(f"Error inserting into Supabase: {e}")
+            print(f"Error inserting into Supabase for keyword '{search_keyword}': {e}")
     else:
-        print("Supabase client not initialized. Skipping database insertion.")
+        print(f"Supabase client not initialized. Skipping database insertion for keyword '{search_keyword}'.")
 
 # --- Stream Processing Logic (Background Task) --- 
 async def consume_stream():
