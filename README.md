@@ -1,6 +1,6 @@
-# 🧠 Anora — Real-Time Brand Intel for Sales Teams
+# Flare — Real-Time Brand Intel for Sales Teams
 
-Anora is a real-time monitoring platform that scans the internet for mentions of your brand, competitors, and custom keywords. It filters noise, analyzes sentiment, and delivers only high-signal leads to your sales team in a live dashboard — like Google Alerts, weaponized for outbound.
+Flare is a real-time monitoring platform that scans the internet for mentions of your brand, competitors, and custom keywords. It filters noise, analyzes sentiment, and delivers only high-signal leads to your sales team in a live dashboard — like Google Alerts, weaponized for outbound.
 
 ---
 
