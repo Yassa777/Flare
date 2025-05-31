@@ -11,7 +11,7 @@ Flare is a real-time monitoring platform that scans the internet for mentions of
 - **Basic noise filtering** (placeholder, can be expanded).
 - **Live dashboard** built with Next.js, Tailwind CSS, shadcn/ui, and React Query.
 - Supabase **Data Persistence** using Supabase Postgres for mentions and leads.
-- Lead capture** with notes and filtering by sentiment/keyword.
+- Lead capture with notes and filtering by sentiment/keyword.
 - Dedicated Leads Page** to view all captured leads.
 
 ---
