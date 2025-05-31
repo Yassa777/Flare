@@ -6,13 +6,13 @@ Flare is a real-time monitoring platform that scans the internet for mentions of
 
 ## 🚀 Features
 
-- ✅ **On-demand news ingestion** from NewsAPI based on user-defined keywords.
-- 🧠 **Sentiment analysis** using OpenAI API (gpt-4o-mini) for fast and accurate insights.
-- 🧹 **Basic noise filtering** (placeholder, can be expanded).
-- 🖥️ **Live dashboard** built with Next.js, Tailwind CSS, shadcn/ui, and React Query.
--  supabase **Data Persistence** using Supabase Postgres for mentions and leads.
-- ⚡ **Lead capture** with notes and filtering by sentiment/keyword.
-- 📈 **Dedicated Leads Page** to view all captured leads.
+- **On-demand news ingestion** from NewsAPI based on user-defined keywords.
+- **Sentiment analysis** using OpenAI API (gpt-4o-mini) for fast and accurate insights.
+- **Basic noise filtering** (placeholder, can be expanded).
+- **Live dashboard** built with Next.js, Tailwind CSS, shadcn/ui, and React Query.
+- Supabase **Data Persistence** using Supabase Postgres for mentions and leads.
+- Lead capture** with notes and filtering by sentiment/keyword.
+- Dedicated Leads Page** to view all captured leads.
 
 ---
 
