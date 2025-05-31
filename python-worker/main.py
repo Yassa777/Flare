@@ -5,6 +5,8 @@ import redis.asyncio as redis # Using asyncio version of redis library
 from fastapi import FastAPI, HTTPException
 from dotenv import load_dotenv
 from supabase import create_client, Client as SupabaseClient # Renamed to avoid conflict
+import openai # Import OpenAI
+import json # For parsing OpenAI response
 
 # Load environment variables from .env file in the python-worker directory
 load_dotenv()
@@ -20,17 +22,19 @@ REDIS_CONSUMER_NAME_PREFIX = os.getenv("REDIS_CONSUMER_NAME_PREFIX", "consumer_"
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY") # Use service key for backend operations
 
-HUGGINGFACE_API_KEY = os.getenv("HUGGINGFACE_API_KEY")
-HUGGINGFACE_SENTIMENT_ENDPOINT = os.getenv("HUGGINGFACE_SENTIMENT_ENDPOINT", "https://api-inference.huggingface.co/models/distilbert-base-uncased-finetuned-sst-2-english")
+# OpenAI Configuration
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENAI_MODEL_NAME = os.getenv("OPENAI_MODEL_NAME", "gpt-4o-mini")
 
 # --- Initialize Clients --- 
 app = FastAPI(title="Mentions Processor Worker")
 redis_client: redis.Redis | None = None
 supabase_client: SupabaseClient | None = None
+openai_client: openai.AsyncOpenAI | None = None # Async OpenAI client
 
 @app.on_event("startup")
 async def startup_event():
-    global redis_client, supabase_client
+    global redis_client, supabase_client, openai_client
     if not UPSTASH_REDIS_URL:
         raise ConfigurationError("UPSTASH_REDIS_URL is not set.")
     
@@ -47,6 +51,12 @@ async def startup_event():
     else:
         print("Supabase URL or Service Key not found. Supabase client not initialized.")
 
+    if OPENAI_API_KEY:
+        openai_client = openai.AsyncOpenAI(api_key=OPENAI_API_KEY)
+        print(f"OpenAI client initialized with model: {OPENAI_MODEL_NAME}.")
+    else:
+        print("OPENAI_API_KEY not found. OpenAI client not initialized.")
+
     # Launch Redis stream consumer as a background task
     if redis_client: 
         print("Launching Redis stream consumer as a background task...")
@@ -59,46 +69,72 @@ async def shutdown_event():
     if redis_client:
         await redis_client.close()
         print("Redis connection closed.")
+    # No explicit close for AsyncOpenAI client in current version, relies on httpx client session closing.
 
 class ConfigurationError(Exception):
     pass
 
 # --- Helper Functions (Placeholders) --- 
 async def get_sentiment(text: str) -> dict:
-    if not HUGGINGFACE_API_KEY or not HUGGINGFACE_SENTIMENT_ENDPOINT:
-        print("HuggingFace API key or endpoint not configured. Skipping sentiment analysis.")
+    if not openai_client:
+        print("OpenAI client not configured. Skipping sentiment analysis.")
         return {"label": "NEUTRAL", "score": 0.5} # Default neutral sentiment
+
+    if not text or not text.strip():
+        print("Input text for sentiment analysis is empty. Skipping.")
+        return {"label": "NEUTRAL", "score": 0.0}
     
-    headers = {"Authorization": f"Bearer {HUGGINGFACE_API_KEY}"}
-    async with httpx.AsyncClient() as client:
-        try:
-            response = await client.post(HUGGINGFACE_SENTIMENT_ENDPOINT, headers=headers, json={"inputs": text})
-            response.raise_for_status() # Raise an exception for bad status codes
-            # The response format might be a list of lists of dicts, e.g., [[{'label': 'POSITIVE', 'score': 0.99}]]
-            # Adjust parsing based on the specific model's output format
-            sentiment_data = response.json()
-            if isinstance(sentiment_data, list) and len(sentiment_data) > 0 and \
-               isinstance(sentiment_data[0], list) and len(sentiment_data[0]) > 0 and \
-               isinstance(sentiment_data[0][0], dict):
-                return {
-                    "label": sentiment_data[0][0].get("label", "UNKNOWN"), 
-                    "score": sentiment_data[0][0].get("score", 0.0)
-                }
-            elif isinstance(sentiment_data, list) and len(sentiment_data) > 0 and isinstance(sentiment_data[0], dict):
-                 # Some models might return a list of dicts directly e.g. [{'label': 'POSITIVE', 'score': 0.99}]
-                 return {
-                    "label": sentiment_data[0].get("label", "UNKNOWN"), 
-                    "score": sentiment_data[0].get("score", 0.0)
-                }
-            else:
-                print(f"Unexpected sentiment analysis response format: {sentiment_data}")
-                return {"label": "ERROR_PARSING", "score": 0.0}
-        except httpx.HTTPStatusError as e:
-            print(f"HTTP error during sentiment analysis: {e.response.status_code} - {e.response.text}")
-            return {"label": "ERROR_HTTP", "score": 0.0}
-        except Exception as e:
-            print(f"Error during sentiment analysis: {e}")
-            return {"label": "ERROR_UNKNOWN", "score": 0.0}
+    system_prompt = (
+        "You are a sentiment analysis expert. Classify the sentiment of the given text."
+        "Your response must be a JSON object with two keys: 'label' and 'score'."
+        "The 'label' must be one of: POSITIVE, NEGATIVE, NEUTRAL."
+        "The 'score' must be a float between 0.0 and 1.0, representing the confidence in the label."
+        "For NEUTRAL sentiment, the score can be around 0.5."
+        "Example: {\"label\": \"POSITIVE\", \"score\": 0.98}" # Escaped quotes for JSON in string
+    )
+    
+    user_prompt = f"Analyze the sentiment of this text: \n\n{text[:2000]}" # Truncate to avoid excessive token usage
+
+    try:
+        response = await openai_client.chat.completions.create(
+            model=OPENAI_MODEL_NAME,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            temperature=0.2, # Low temperature for more deterministic sentiment classification
+            max_tokens=50,   # Max tokens for the JSON response
+            response_format={"type": "json_object"} # Ensure JSON output with newer models
+        )
+        
+        content = response.choices[0].message.content
+        if content:
+            sentiment_data = json.loads(content)
+            label = sentiment_data.get("label", "UNKNOWN").upper()
+            score = sentiment_data.get("score", 0.0)
+
+            # Basic validation
+            if label not in ["POSITIVE", "NEGATIVE", "NEUTRAL"]:
+                print(f"OpenAI returned unexpected label: {label}. Raw content: {content}")
+                label = "UNKNOWN"
+            if not isinstance(score, (float, int)) or not (0.0 <= score <= 1.0):
+                print(f"OpenAI returned invalid score: {score}. Raw content: {content}")
+                score = 0.0
+            
+            return {"label": label, "score": float(score)}
+        else:
+            print(f"OpenAI returned empty content for sentiment analysis. Text: {text[:100]}...")
+            return {"label": "ERROR_EMPTY_RESPONSE", "score": 0.0}
+
+    except json.JSONDecodeError as e:
+        print(f"Error decoding JSON from OpenAI response: {e}. Raw content: {content if 'content' in locals() else 'N/A'}")
+        return {"label": "ERROR_JSON_DECODE", "score": 0.0}
+    except openai.APIError as e:
+        print(f"OpenAI API error: {e}")
+        return {"label": "ERROR_API", "score": 0.0}
+    except Exception as e:
+        print(f"Unexpected error during sentiment analysis with OpenAI: {e}")
+        return {"label": "ERROR_UNKNOWN", "score": 0.0}
 
 def filter_noise(article: dict) -> bool:
     # Placeholder: Basic noise filtering logic
@@ -231,9 +267,6 @@ if __name__ == "__main__":
     
     # To run the consumer as a background task when FastAPI starts:
     # Note: This is a simplified approach. For robust production, consider dedicated worker managers like Celery, ARQ, or running the consumer script separately.
-    
-    # asyncio.create_task(consume_stream()) # This would start it but uvicorn manages the main loop
-    # A better way for uvicorn is to use lifespan events or run consume_stream() separately.
     
     # asyncio.create_task(consume_stream()) # This would start it but uvicorn manages the main loop
     # A better way for uvicorn is to use lifespan events or run consume_stream() separately.

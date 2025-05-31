@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+redis
+huggingface_hub
+transformers
+torch
+python-dotenv
+httpx
+supabase
+openai 
