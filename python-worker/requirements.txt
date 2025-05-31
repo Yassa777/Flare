@@ -1,10 +1,9 @@
 fastapi
 uvicorn[standard]
-redis
-huggingface_hub
-transformers
-torch
+redis>=4.6.0
 python-dotenv
-httpx
-supabase
-openai 
+httpx>=0.24.0
+openai>=1.0.0
+supabase>=2.0.0  # For Pydantic v2 compatibility
+pydantic>=2.0.0  # FastAPI, Uvicorn and newer Supabase work with Pydantic v2
+# transformers and torch are no longer needed as HuggingFace API is replaced by OpenAI 

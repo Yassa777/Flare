@@ -8,12 +8,17 @@ from supabase import create_client, Client as SupabaseClient # Renamed to avoid 
 import openai # Import OpenAI
 import json # For parsing OpenAI response
 
+# Import redis client and exceptions separately for clarity
+from redis.asyncio import Redis as AsyncRedis, from_url as redis_from_url
+from redis import exceptions as RedisExceptions
+
 # Load environment variables from .env file in the python-worker directory
 load_dotenv()
 
 # --- Configuration --- 
-UPSTASH_REDIS_URL = os.getenv("UPSTASH_REDIS_URL") # Different from REST URL, usually redis://...
-UPSTASH_REDIS_PASSWORD = os.getenv("UPSTASH_REDIS_PASSWORD") # Often part of the URL or separate
+# IMPORTANT: For Upstash, ensure your UPSTASH_REDIS_URL starts with rediss:// for SSL
+UPSTASH_REDIS_URL = os.getenv("UPSTASH_REDIS_URL") 
+UPSTASH_REDIS_PASSWORD = os.getenv("UPSTASH_REDIS_PASSWORD") # Usually part of the URL for Upstash
 REDIS_STREAM_KEY = os.getenv("REDIS_MENTIONS_STREAM_KEY", "mentions_stream")
 # Group name and consumer name for the stream
 REDIS_CONSUMER_GROUP_NAME = os.getenv("REDIS_CONSUMER_GROUP_NAME", "mentions_processor_group")
@@ -28,7 +33,7 @@ OPENAI_MODEL_NAME = os.getenv("OPENAI_MODEL_NAME", "gpt-4o-mini")
 
 # --- Initialize Clients --- 
 app = FastAPI(title="Mentions Processor Worker")
-redis_client: redis.Redis | None = None
+redis_client: AsyncRedis | None = None
 supabase_client: SupabaseClient | None = None
 openai_client: openai.AsyncOpenAI | None = None # Async OpenAI client
 
@@ -36,14 +41,23 @@ openai_client: openai.AsyncOpenAI | None = None # Async OpenAI client
 async def startup_event():
     global redis_client, supabase_client, openai_client
     if not UPSTASH_REDIS_URL:
-        raise ConfigurationError("UPSTASH_REDIS_URL is not set.")
+        raise ConfigurationError("UPSTASH_REDIS_URL is not set. Please check your .env file.")
+    print(f"Using UPSTASH_REDIS_URL: {UPSTASH_REDIS_URL}") # Log the URL being used
     
-    redis_client = redis.from_url(UPSTASH_REDIS_URL, decode_responses=True)
     try:
+        # For Upstash, SSL is required. redis-py should handle rediss:// scheme correctly.
+        # If using redis://, ensure your Upstash instance allows non-SSL (unlikely) or set ssl=True explicitly.
+        # However, the best approach is to use rediss:// in your UPSTASH_REDIS_URL.
+        redis_client = redis_from_url(UPSTASH_REDIS_URL, decode_responses=True)
         await redis_client.ping()
         print("Successfully connected to Redis!")
+    except RedisExceptions.ConnectionError as e:
+        print(f"Redis connection error during ping: {e}. Check URL, SSL (use rediss://), and credentials.")
+        # Optionally, prevent startup or allow retry logic depending on desired robustness
+        return # Stop further startup if Redis connection fails critically
     except Exception as e:
-        print(f"Error connecting to Redis: {e}")
+        print(f"An unexpected error occurred connecting to Redis: {e}")
+        return
 
     if SUPABASE_URL and SUPABASE_SERVICE_KEY:
         supabase_client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
@@ -62,7 +76,7 @@ async def startup_event():
         print("Launching Redis stream consumer as a background task...")
         asyncio.create_task(consume_stream())
     else:
-        print("Redis client not available, stream consumer not started.")
+        print("Redis client not available (due to connection issues), stream consumer not started.")
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -145,44 +159,93 @@ def filter_noise(article: dict) -> bool:
         return True
     return False # Not noise
 
-async def process_message(message_id: str, article_data: dict):
-    # article_data is the message payload from Redis stream
-    title = article_data.get('title', '[No Title]')
-    search_keyword = article_data.get("search_keyword", "[Unknown Keyword]") # Get the search keyword
-    print(f"Processing message {message_id} for keyword '{search_keyword}': {title}")
+async def process_message(message_id: str, article_data_raw: any):
+    article_data: dict
+    
+    print(f"DEBUG: process_message received message_id: {message_id}")
+    print(f"DEBUG: type of article_data_raw: {type(article_data_raw)}")
+    print(f"DEBUG: article_data_raw (first 500 chars): {str(article_data_raw)[:500]}")
 
-    # Remove search_keyword from article_data if you don't want it in raw_data or if it might conflict
-    # Or ensure your raw_data field in Supabase can handle it / it's fine as is.
-    # For now, we assume it's fine to be part of the article_data dict that goes into raw_data.
+    if isinstance(article_data_raw, str):
+        try:
+            article_data = json.loads(article_data_raw)
+            print(f"DEBUG: Successfully parsed article_data_raw string into dict.")
+        except json.JSONDecodeError as e:
+            print(f"Error decoding JSON from article_data string: {e}. Raw data: {article_data_raw[:500]}")
+            return 
+    elif isinstance(article_data_raw, dict):
+        article_data = article_data_raw
+        print(f"DEBUG: article_data_raw is already a dict.")
+    else:
+        print(f"Unexpected type for article_data: {type(article_data_raw)}. Raw data: {str(article_data_raw)[:500]}")
+        return
+
+    # Now, article_data should be a dictionary. The error must be happening when accessing its keys.
+    # Let's add a type check for article_data before proceeding to use .get()
+    if not isinstance(article_data, dict):
+        print(f"CRITICAL ERROR: article_data is NOT a dict after parsing/assignment. Type: {type(article_data)}. Value: {str(article_data)[:500]}")
+        return
+
+    title = article_data.get('title', '[No Title]')
+    search_keyword = article_data.get("search_keyword", "[Unknown Keyword]")
+    print(f"Processing message {message_id} for keyword '{search_keyword}': {title}")
 
     if filter_noise(article_data):
         print(f"Article '{title}' (keyword: '{search_keyword}') filtered out as noise.")
         return
 
-    sentiment_text = article_data.get('description') or article_data.get('title') or ""
+    # Determine sentiment_text: use description if available, otherwise title.
+    # Ensure that description or title used for sentiment_text are actually strings.
+    description_for_sentiment = article_data.get('description')
+    title_for_sentiment = article_data.get('title')
+    sentiment_text = ""
+    if isinstance(description_for_sentiment, str) and description_for_sentiment.strip():
+        sentiment_text = description_for_sentiment
+    elif isinstance(title_for_sentiment, str) and title_for_sentiment.strip():
+        sentiment_text = title_for_sentiment
+    
     sentiment = await get_sentiment(sentiment_text)
     print(f"Sentiment for '{title}' (keyword: '{search_keyword}'): {sentiment}")
 
     if supabase_client:
+        # Prepare enriched_mention for Supabase insertion
+        source_value = article_data.get("source")
+        # If source_value itself is a dict like {"name": "..."}, then get "name"
+        # Otherwise, assume source_value is already the string name, based on debug logs.
+        if isinstance(source_value, dict):
+            source_display = source_value.get("name")
+        else:
+            source_display = source_value # Assumes it's already the string name or None
+
         enriched_mention = {
             "keyword": search_keyword,
-            "source": article_data.get("source"),
-            "author": article_data.get("author"),
+            "source": source_display, # Simplified based on debug output
             "title": title,
-            "description": article_data.get("description"),
+            "body": article_data.get("description"), 
             "url": article_data.get("url"),
-            "image_url": article_data.get("urlToImage"),
-            "published_at": article_data.get("publishedAt"),
-            "content_preview": (article_data.get("content") or "")[:255],
-            "sentiment_label": sentiment.get("label"),
-            "sentiment_score": sentiment.get("score"),
-            "raw_data": article_data
+            "image_url": article_data.get("urlToImage"), 
+            "published_at": article_data.get("publishedAt"), 
+            "sentiment_label": sentiment.get("label"), 
+            "sentiment_score": sentiment.get("score"), 
+            "raw_data": article_data 
         }
         try:
-            data_response = await supabase_client.table("mentions").insert(enriched_mention).execute()
-            print(f"Inserted into Supabase for keyword '{search_keyword}'. Response data: {data_response.data if hasattr(data_response, 'data') else 'No data in response'}")
+            # Try executing without await, as execute() might be synchronous after async setup
+            # or the returned APIResponse object is not meant to be awaited directly.
+            data_response = supabase_client.table("mentions").insert(enriched_mention).execute()
+            # The actual I/O (HTTP request) should still be async if the client is configured with httpx.AsyncClient.
+            
+            # Check for errors in the response, as it might not raise exceptions directly
+            # for HTTP errors if it executed synchronously.
+            if hasattr(data_response, 'error') and data_response.error:
+                print(f"Error from Supabase insert: {data_response.error}")
+            elif hasattr(data_response, 'data'):
+                 print(f"Inserted into Supabase for keyword '{search_keyword}'. Response data: {data_response.data}")
+            else:
+                print(f"Inserted into Supabase for keyword '{search_keyword}'. No data in response, but no explicit error.")
+
         except Exception as e:
-            print(f"Error inserting into Supabase for keyword '{search_keyword}': {e}")
+            print(f"Exception during Supabase insert for keyword '{search_keyword}': {e}") # Changed log to distinguish general exceptions
     else:
         print(f"Supabase client not initialized. Skipping database insertion for keyword '{search_keyword}'.")
 
@@ -196,47 +259,49 @@ async def consume_stream():
     print(f"Starting Redis Stream consumer: {consumer_name} on group {REDIS_CONSUMER_GROUP_NAME} for stream {REDIS_STREAM_KEY}")
 
     try:
-        # Ensure the consumer group exists. MKSTREAM=True creates the stream if it doesn't exist.
         await redis_client.xgroup_create(name=REDIS_STREAM_KEY, groupname=REDIS_CONSUMER_GROUP_NAME, id='0', mkstream=True)
         print(f"Consumer group '{REDIS_CONSUMER_GROUP_NAME}' ensured for stream '{REDIS_STREAM_KEY}'.")
-    except redis.exceptions.ResponseError as e:
+    except RedisExceptions.ResponseError as e: # Corrected exception type
         if "BUSYGROUP" in str(e):
             print(f"Consumer group '{REDIS_CONSUMER_GROUP_NAME}' already exists.")
         else:
             print(f"Error creating/checking consumer group: {e}")
-            return # Cannot proceed without consumer group
+            return 
+    except RedisExceptions.ConnectionError as e: # Catch connection errors during xgroup_create too
+        print(f"Redis connection error during xgroup_create: {e}. Worker might not be able to process messages.")
+        return
+    except Exception as e: # Catch any other unexpected errors during group creation
+        print(f"Unexpected error during consumer group creation: {e}")
+        return
 
     while True:
         try:
-            # XREADGROUP GROUP group consumer [COUNT count] [BLOCK milliseconds] STREAMS key [key ...] ID [ID ...]
-            # '>' means only new messages not yet delivered to other consumers in this group.
-            # BLOCK 10000 means wait up to 10 seconds for a message.
             messages = await redis_client.xreadgroup(
                 groupname=REDIS_CONSUMER_GROUP_NAME,
                 consumername=consumer_name,
-                streams={REDIS_STREAM_KEY: '>'}, # Read new messages from this stream
-                count=1, # Process one message at a time
-                block=10000 # Block for 10 seconds (10000 ms)
+                streams={REDIS_STREAM_KEY: '>'},
+                count=1,
+                block=10000
             )
 
             if not messages:
-                # print("No new messages, continuing to listen...")
                 continue
 
             for stream_name, message_list in messages:
                 for message_id, article_data in message_list:
                     await process_message(message_id, article_data)
-                    # Acknowledge the message after successful processing
                     await redis_client.xack(REDIS_STREAM_KEY, REDIS_CONSUMER_GROUP_NAME, message_id)
                     print(f"Acknowledged message {message_id}")
 
-        except redis.exceptions.ConnectionError as e:
-            print(f"Redis connection error: {e}. Attempting to reconnect...")
-            await asyncio.sleep(5) # Wait before retrying
-            # Potentially re-initialize redis_client here if needed and possible
+        except RedisExceptions.ConnectionError as e: # Corrected exception type
+            print(f"Redis connection error in consumer loop: {e}. Attempting to reconnect or will retry on next cycle if connection recovers.")
+            await asyncio.sleep(5) 
+        except RedisExceptions.TimeoutError: # Handle potential timeouts
+            print("Redis command timed out. Will retry.")
+            await asyncio.sleep(1)
         except Exception as e:
             print(f"Error in Redis stream consumer loop: {e}")
-            await asyncio.sleep(5) # Wait a bit before continuing
+            await asyncio.sleep(5) 
 
 @app.post("/trigger-process/") # Example endpoint to manually trigger processing (optional)
 async def trigger_processing():
@@ -279,7 +344,7 @@ if __name__ == "__main__":
             print("Launching Redis stream consumer as a background task...")
             asyncio.create_task(consume_stream())
         else:
-            print("Redis client not available, stream consumer not started.")
+            print("Redis client not available (due to connection issues), stream consumer not started.")
     
     app.router.on_startup = [new_startup_event] # Replace startup handlers
 

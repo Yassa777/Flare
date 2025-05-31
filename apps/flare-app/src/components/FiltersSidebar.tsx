@@ -1,23 +1,47 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label"; // Label is often used with Checkbox/Input
 
+// Define available sentiment options, ensuring consistency (e.g., uppercase)
+const SENTIMENT_OPTIONS = [
+  { id: 'POSITIVE', label: 'Positive' },
+  { id: 'NEUTRAL', label: 'Neutral' },
+  { id: 'NEGATIVE', label: 'Negative' },
+];
+
 interface FiltersSidebarProps {
   onKeywordSearch: (keyword: string) => void;
   isSearching: boolean;
+  onSentimentChange: (selectedSentiments: string[]) => void;
+  // No need to pass initialSelectedSentiments if we manage it internally and call back
 }
 
-const FiltersSidebar = ({ onKeywordSearch, isSearching }: FiltersSidebarProps) => {
+const FiltersSidebar = ({ 
+  onKeywordSearch, 
+  isSearching, 
+  onSentimentChange 
+}: FiltersSidebarProps) => {
   const [keywordInput, setKeywordInput] = useState('');
+  const [selectedSentimentIds, setSelectedSentimentIds] = useState<string[]>([]);
 
   const handleSearch = () => {
     if (keywordInput.trim()) {
       onKeywordSearch(keywordInput.trim());
     }
+  };
+
+  const handleSentimentCheckboxChange = (sentimentId: string) => {
+    setSelectedSentimentIds(prevIds => {
+      const newIds = prevIds.includes(sentimentId)
+        ? prevIds.filter(id => id !== sentimentId)
+        : [...prevIds, sentimentId];
+      onSentimentChange(newIds); // Call the callback with the new array of selected sentiment IDs
+      return newIds;
+    });
   };
 
   return (
@@ -28,8 +52,8 @@ const FiltersSidebar = ({ onKeywordSearch, isSearching }: FiltersSidebarProps) =
         <div className="space-y-2">
           {['News', 'Twitter', 'Blogs'].map((source) => (
             <div key={source} className="flex items-center space-x-2">
-              <Checkbox id={source.toLowerCase()} disabled />
-              <Label htmlFor={source.toLowerCase()} className="text-sm font-normal">{source}</Label>
+              <Checkbox id={`source-${source.toLowerCase()}`} disabled />
+              <Label htmlFor={`source-${source.toLowerCase()}`} className="text-sm font-normal">{source}</Label>
             </div>
           ))}
         </div>
@@ -37,10 +61,16 @@ const FiltersSidebar = ({ onKeywordSearch, isSearching }: FiltersSidebarProps) =
       <div>
         <h3 className="text-sm font-medium text-muted-foreground mb-3">Sentiment</h3>
         <div className="space-y-2">
-          {['Positive', 'Neutral', 'Negative'].map((sentiment) => (
-            <div key={sentiment} className="flex items-center space-x-2">
-              <Checkbox id={sentiment.toLowerCase()} disabled />
-              <Label htmlFor={sentiment.toLowerCase()} className="text-sm font-normal">{sentiment}</Label>
+          {SENTIMENT_OPTIONS.map((sentiment) => (
+            <div key={sentiment.id} className="flex items-center space-x-2">
+              <Checkbox 
+                id={`sentiment-${sentiment.id.toLowerCase()}`}
+                checked={selectedSentimentIds.includes(sentiment.id)}
+                onCheckedChange={() => handleSentimentCheckboxChange(sentiment.id)}
+              />
+              <Label htmlFor={`sentiment-${sentiment.id.toLowerCase()}`} className="text-sm font-normal">
+                {sentiment.label}
+              </Label>
             </div>
           ))}
         </div>

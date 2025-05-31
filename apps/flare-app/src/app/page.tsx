@@ -1,12 +1,14 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import TopNav from "@/components/TopNav";
 import FiltersSidebar from "@/components/FiltersSidebar";
 import MentionsFeed from "@/components/MentionsFeed";
+import ArticleDetailModal from "@/components/ArticleDetailModal";
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import { ReactQueryDevtools } from '@tanstack/react-query-devtools';
 import { supabase } from '@/lib/supabaseClient'; // Import your Supabase client
+import { Toaster } from "sonner";
 
 // Article from NewsAPI
 interface NewsArticle {
@@ -35,6 +37,10 @@ export interface DisplayArticle extends NewsArticle { // Extends NewsArticle
   sentiment_score?: number | null;
   isEnriched?: boolean;
   supabase_id?: number; // Keep original Supabase ID if available
+  raw_data?: any; // Add raw_data (can be more specific like Record<string, any> if preferred)
+  lead?: boolean | null; // Add lead status
+  note?: string | null; // Add note
+  // body will be inherited from NewsArticle's description field in the merging logic
 }
 
 const queryClient = new QueryClient();
@@ -69,6 +75,9 @@ const fetchEnrichedMentionsFromSupabase = async (keyword: string): Promise<Enric
 function MentionsPageContent() {
   const [currentKeyword, setCurrentKeyword] = useState<string>('');
   const [combinedArticles, setCombinedArticles] = useState<DisplayArticle[]>([]);
+  const [selectedSentiments, setSelectedSentiments] = useState<string[]>([]);
+  const [selectedArticleForModal, setSelectedArticleForModal] = useState<DisplayArticle | null>(null);
+  const [isModalOpen, setIsModalOpen] = useState(false);
 
   // Query 1: Fetch initial news from our API (which calls NewsAPI)
   const { 
@@ -156,31 +165,77 @@ function MentionsPageContent() {
 
   }, [newsApiData, supabaseData, currentKeyword, isSuccessNews]);
 
-  const handleSearch = (keywordFromSidebar: string) => {
+  // Memoized filtered articles based on selectedSentiments
+  const filteredArticles = useMemo(() => {
+    if (selectedSentiments.length === 0) {
+      return combinedArticles;
+    }
+    return combinedArticles.filter(article => 
+      article.isEnriched && article.sentiment_label && selectedSentiments.includes(article.sentiment_label)
+    );
+  }, [combinedArticles, selectedSentiments]);
+
+  const handleKeywordSearch = (keywordFromSidebar: string) => {
     setCurrentKeyword(keywordFromSidebar);
-    // Optionally, clear combinedArticles immediately for a faster UI response
-    // setCombinedArticles([]); 
-    // React Query will refetch for 'newsApiMentions' and 'supabaseMentions' due to currentKeyword change
+    setSelectedSentiments([]);
+    setIsModalOpen(false);
+  };
+
+  const handleSentimentChange = (sentiments: string[]) => {
+    setSelectedSentiments(sentiments);
+  };
+
+  const handleViewArticleDetails = (article: DisplayArticle) => {
+    setSelectedArticleForModal(article);
+    setIsModalOpen(true);
+  };
+
+  const handleCloseModal = () => {
+    setIsModalOpen(false);
+    setSelectedArticleForModal(null);
+  };
+
+  const handleArticleUpdateInList = (updatedArticle: DisplayArticle) => {
+    setCombinedArticles(prevArticles => 
+      prevArticles.map(art => 
+        art.supabase_id === updatedArticle.supabase_id ? { ...art, ...updatedArticle } : art
+      )
+    );
   };
   
-  // The primary loading state is driven by the initial NewsAPI fetch for the current keyword.
   const overallIsLoading = isLoadingNews && !!currentKeyword;
   const overallIsError = isErrorNews;
   const overallErrorMsg = errorNews?.message;
 
   return (
-    <div className="flex flex-col h-screen bg-background">
-      <TopNav />
-      <div className="flex flex-1 overflow-hidden">
-        <FiltersSidebar onKeywordSearch={handleSearch} isSearching={overallIsLoading} />
-        <MentionsFeed 
-          articles={combinedArticles} 
-          isLoading={overallIsLoading}
-          isError={overallIsError}
-          errorMsg={overallErrorMsg}
-        />
+    <>
+      <div className="flex flex-col h-screen bg-background">
+        <TopNav />
+        <div className="flex flex-1 overflow-hidden">
+          <FiltersSidebar 
+            onKeywordSearch={handleKeywordSearch} 
+            isSearching={overallIsLoading} 
+            onSentimentChange={handleSentimentChange}
+          />
+          <MentionsFeed 
+            articles={filteredArticles}
+            isLoading={overallIsLoading}
+            isError={overallIsError}
+            errorMsg={overallErrorMsg}
+            onViewArticleDetails={handleViewArticleDetails}
+          />
+        </div>
       </div>
-    </div>
+      {selectedArticleForModal && (
+        <ArticleDetailModal 
+          article={selectedArticleForModal}
+          isOpen={isModalOpen}
+          onClose={handleCloseModal}
+          onArticleUpdate={handleArticleUpdateInList}
+        />
+      )}
+      <Toaster richColors position="top-right" />
+    </>
   );
 }
 

@@ -1,29 +1,32 @@
 'use client';
 
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-} from "@/components/ui/card";
+import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import React from "react";
 import { Loader2Icon } from 'lucide-react';
+import type { DisplayArticle } from "../app/page"; // Import DisplayArticle
 
 export interface MentionCardProps {
-  author: string;
-  time: string;
-  title: string;
-  description?: string | null;
+  article: DisplayArticle; // Pass the whole article object
   sourceIcon: React.ReactNode;
-  articleUrl?: string | null;
-  sentimentLabel?: string | null;
-  sentimentScore?: number | null;
-  isEnriched?: boolean;
+  onViewDetails: (article: DisplayArticle) => void;
 }
 
-const MentionCard = ({ author, time, title, description, sourceIcon, articleUrl, sentimentLabel, sentimentScore, isEnriched }: MentionCardProps) => {
-  const cardContent = description || title;
-  const cardTitle = description ? title : "";
+const MentionCard = ({ article, sourceIcon, onViewDetails }: MentionCardProps) => {
+  const { 
+    author, 
+    publishedAt, 
+    title, 
+    description, 
+    sentiment_label,
+    sentiment_score,
+    isEnriched, 
+    url,
+    lead
+  } = article;
+
+  const time = publishedAt ? new Date(publishedAt).toLocaleDateString() : 'N/A';
 
   const getSentimentColor = (label?: string | null) => {
     if (!label) return "secondary";
@@ -36,28 +39,42 @@ const MentionCard = ({ author, time, title, description, sourceIcon, articleUrl,
   };
 
   return (
-    <Card className="flex items-start space-x-4 p-4">
+    <Card 
+      className={`flex items-start space-x-4 p-4 hover:shadow-md transition-shadow cursor-pointer ${lead ? 'border-purple-500 border-2' : ''}`}
+      onClick={() => onViewDetails(article)}
+    >
       <div className="flex-shrink-0 w-10 h-10 bg-muted rounded-md flex items-center justify-center text-muted-foreground">
         {sourceIcon}
       </div>
       <div className="flex-grow">
-        {cardTitle && <p className="text-sm font-semibold text-foreground mb-1 leading-snug">{cardTitle}</p>}
-        <p className="text-sm text-muted-foreground leading-relaxed break-words">{cardContent}</p>
+        <div className="flex justify-between items-start">
+            {description ? 
+              <p className="text-sm font-semibold text-foreground mb-1 leading-snug line-clamp-2 mr-2 flex-1">{title}</p> 
+              : 
+              <p className="text-sm font-semibold text-foreground mb-1 leading-snug line-clamp-2 mr-2 flex-1">{title}</p>
+            }
+            {lead && (
+                <Badge variant="default" className="text-xs bg-purple-600 hover:bg-purple-700 text-white whitespace-nowrap">
+                    Lead
+                </Badge>
+            )}
+        </div>
+        {description && <p className="text-sm text-muted-foreground leading-relaxed line-clamp-3 break-words">{description}</p>}
         <div className="flex items-center justify-between mt-2">
           <div className="text-xs text-muted-foreground">
-            <span>{time}</span> - <span>{author}</span>
+            <span>{time}</span> - <span>{author || 'Unknown'}</span>
           </div>
           <div className="flex items-center">
             {!isEnriched && (
               <Loader2Icon className="h-4 w-4 animate-spin text-muted-foreground mr-2" />
             )}
-            {isEnriched && sentimentLabel && (
-              <Badge variant="outline" className={`text-xs ${getSentimentColor(sentimentLabel)} text-white`}>
-                {sentimentLabel}
-                {typeof sentimentScore === 'number' && ` (${sentimentScore.toFixed(2)})`}
+            {isEnriched && sentiment_label && (
+              <Badge variant="outline" className={`text-xs ${getSentimentColor(sentiment_label)} text-white`}>
+                {sentiment_label}
+                {typeof sentiment_score === 'number' && ` (${sentiment_score.toFixed(2)})`}
               </Badge>
             )}
-            {isEnriched && !sentimentLabel && (
+            {isEnriched && !sentiment_label && (
                 <Badge variant="outline" className="text-xs border-dashed">
                     N/A
                 </Badge>
@@ -65,9 +82,9 @@ const MentionCard = ({ author, time, title, description, sourceIcon, articleUrl,
           </div>
         </div>
       </div>
-      {articleUrl && (
-        <Button variant="outline" size="sm" asChild className="ml-auto whitespace-nowrap shrink-0 self-start">
-          <a href={articleUrl} target="_blank" rel="noopener noreferrer">Read More</a>
+      {url && (
+        <Button variant="outline" size="sm" asChild className="ml-auto whitespace-nowrap shrink-0 self-start" onClick={(e) => e.stopPropagation()}>
+          <a href={url} target="_blank" rel="noopener noreferrer">Read More</a>
         </Button>
       )}
     </Card>

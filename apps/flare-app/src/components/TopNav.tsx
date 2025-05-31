@@ -8,13 +8,13 @@ const TopNav = () => (
   <nav className="bg-card border-b border-border p-4 flex justify-between items-center h-16">
     <div className="flex items-center space-x-2">
       {/* Placeholder for logo - replace with actual Image or SVG */}
-      <div className="w-7 h-7 bg-primary rounded-full"></div> 
+      <div className="w-7 h-7 bg-purple-600 rounded-full"></div> 
       <span className="font-semibold text-lg">SalesIntel</span>
     </div>
     <div className="flex items-center space-x-1">
       {[
-        { href: '#', label: 'Home' },
-        { href: '#', label: 'Leads' },
+        { href: '/', label: 'Home' },
+        { href: '/leads', label: 'Leads' },
         { href: '#', label: 'Campaigns' },
         { href: '#', label: 'Analytics' },
         { href: '#', label: 'Settings' },

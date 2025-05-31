@@ -25,13 +25,19 @@ interface MentionsFeedProps {
   isLoading: boolean;
   isError: boolean;
   errorMsg?: string;
+  onViewArticleDetails: (article: DisplayArticle) => void; // New prop
 }
 
-const MentionsFeed = ({ articles, isLoading, isError, errorMsg }: MentionsFeedProps) => {
-  // Placeholder icons for different sources - can be made more dynamic
-  const getSourceIcon = (sourceName?: string) => {
-    if (sourceName?.toLowerCase().includes('twitter')) return <TwitterIcon className="w-5 h-5" />;
-    if (sourceName?.toLowerCase().includes('blog')) return <MessageSquareTextIcon className="w-5 h-5" />;
+const ActualMentionsFeed = ({ articles, isLoading, isError, errorMsg, onViewArticleDetails }: MentionsFeedProps) => {
+  const getSourceIcon = (sourceName?: string | { name?: string }) => { // Updated type for sourceName
+    let nameString: string | undefined;
+    if (typeof sourceName === 'string') {
+      nameString = sourceName;
+    } else {
+      nameString = sourceName?.name;
+    }
+    if (nameString?.toLowerCase().includes('twitter')) return <TwitterIcon className="w-5 h-5" />;
+    if (nameString?.toLowerCase().includes('blog')) return <MessageSquareTextIcon className="w-5 h-5" />;
     return <NewspaperIcon className="w-5 h-5" />;
   };
 
@@ -66,7 +72,7 @@ const MentionsFeed = ({ articles, isLoading, isError, errorMsg }: MentionsFeedPr
   return (
     <main className="flex-1 p-6 space-y-6 bg-muted/30 overflow-y-auto">
       <div className="flex justify-between items-center">
-        <h1 className="text-2xl font-semibold">Search Results</h1>
+        <h1 className="text-2xl font-semibold">Mentions</h1>
         {/* Pause Stream button might not be relevant for on-demand search, or could be a "Clear Results" */}
         {/* <Button variant="outline">
           Pause Stream
@@ -75,16 +81,10 @@ const MentionsFeed = ({ articles, isLoading, isError, errorMsg }: MentionsFeedPr
       <div className="space-y-4">
         {articles.map((article) => (
           <MentionCard 
-            key={article.display_id} // Use display_id for key
-            author={article.author || 'Unknown'}
-            time={article.publishedAt ? new Date(article.publishedAt).toLocaleDateString() : 'N/A'}
-            title={article.title || 'No title'}
-            description={article.description}
-            sourceIcon={getSourceIcon(article.source?.name)}
-            articleUrl={article.url}
-            sentimentLabel={article.sentiment_label} // Pass sentiment
-            sentimentScore={article.sentiment_score} // Pass sentiment
-            isEnriched={article.isEnriched}
+            key={article.display_id} 
+            article={article} // Pass the full article object
+            sourceIcon={getSourceIcon(article.source)} // Pass the source object/string
+            onViewDetails={onViewArticleDetails} // Pass the handler down
           />
         ))}
       </div>
@@ -92,4 +92,4 @@ const MentionsFeed = ({ articles, isLoading, isError, errorMsg }: MentionsFeedPr
   );
 };
 
-export default MentionsFeed; 
+export default ActualMentionsFeed; 
