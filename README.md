@@ -1,37 +1,182 @@
 # Flare — Real-Time Brand Intel for Sales Teams
 
-Flare is a real-time monitoring platform that scans the internet for mentions of your brand, competitors, and custom keywords. It filters noise, analyzes sentiment, and delivers only high-signal leads to your sales team in a live dashboard — like Google Alerts, weaponized for outbound.
+Flare is a real-time monitoring platform that scans the internet for mentions of your brand, competitors, and custom keywords. It filters noise, analyzes sentiment using AI, and delivers high-signal leads to your sales team in a live dashboard.
 
 ---
 
 ## 🚀 Features
 
-- ✅ **Real-time ingestion** from NewsAPI + Reddit (extensible to any RSS or social platform)
-- 🧠 **Sentiment analysis** using HuggingFace transformers
-- 🧹 **Noise filtering** to reduce spam and irrelevant content
-- 🖥️ **Live dashboard** built with Next.js, Supabase Realtime, Tailwind, shadcn/ui
-- ⚡ **One-click lead capture** with notes and filtering by sentiment/source/keyword
-- 🪝 **Optional Slack alerts** for high-priority events
+- ✅ **On-demand news ingestion** from NewsAPI based on user-defined keywords.
+- 🧠 **Sentiment analysis** using OpenAI API (gpt-4o-mini) for fast and accurate insights.
+- 🧹 **Basic noise filtering** (placeholder, can be expanded).
+- 🖥️ **Live dashboard** built with Next.js, Tailwind CSS, shadcn/ui, and React Query.
+-  supabase **Data Persistence** using Supabase Postgres for mentions and leads.
+- ⚡ **Lead capture** with notes and filtering by sentiment/keyword.
+- 📈 **Dedicated Leads Page** to view all captured leads.
 
 ---
 
 ## 🧱 Tech Stack
 
-| Layer | Tool |
-|-------|------|
-| Frontend | Next.js 14 (App Router), Tailwind CSS, shadcn/ui, React Query |
-| Backend | Supabase Postgres, Supabase Realtime, Supabase Auth |
-| Ingestion | Cloudflare Workers (or Vercel Edge Functions) |
-| Queue | Upstash Redis Streams (serverless Kafka-lite) |
-| NLP | Python + FastAPI + HuggingFace Transformers |
-| Dev | Turborepo (monorepo), Vercel (FE+edge), Railway (worker) |
+| Layer         | Tool                                                       |
+|---------------|------------------------------------------------------------|
+| Monorepo      | Turborepo                                                  |
+| Frontend      | Next.js 14 (App Router), TypeScript, Tailwind CSS, shadcn/ui, React Query |
+| Backend API   | Next.js API Routes (Vercel Edge Functions for ingestion)     |
+| Database      | Supabase Postgres                                          |
+| Queue         | Upstash Redis Streams (for decoupling ingestion & processing) |
+| NLP Worker    | Python, FastAPI, OpenAI API                                |
+| Deployment    | Vercel (Frontend & Edge Functions), (Python worker needs separate hosting) |
 
 ---
 
 ## 🛠️ Getting Started
 
-### 1. Clone the repo
+### 1. Clone the Repository
+
 ```bash
-git clone https://github.com/your-org/anora.git
+git clone https://github.com/your-org/anora.git # Replace with your actual repo URL
 cd anora
-pnpm install
+```
+
+### 2. Install Dependencies
+
+This project uses Turborepo and npm workspaces. Install dependencies from the root directory:
+
+```bash
+npm install 
+# or if you prefer pnpm, ensure your package.json reflects this under "packageManager"
+# pnpm install 
+```
+
+### 3. Environment Variables
+
+You will need to set up environment variables for both the Next.js application and the Python worker.
+
+**a) Next.js Frontend (`apps/flare-app/.env.local`)**
+
+Create a file named `.env.local` in the `apps/flare-app/` directory with the following content:
+
+```env
+# Supabase (Frontend Client - public anon key)
+NEXT_PUBLIC_SUPABASE_URL=your_supabase_url
+NEXT_PUBLIC_SUPABASE_ANON_KEY=your_supabase_public_anon_key
+
+# NewsAPI (for fetching articles in edge function)
+NEWS_API_KEY=your_news_api_key
+
+# Upstash Redis (for pushing articles to the stream from edge function - REST API)
+UPSTASH_REDIS_REST_URL=your_upstash_redis_rest_url
+UPSTASH_REDIS_REST_TOKEN=your_upstash_redis_rest_token
+
+# (Optional) Redis Stream Key if different from default "mentions_stream"
+# REDIS_MENTIONS_STREAM_KEY=your_custom_stream_name 
+
+# Supabase Service Key (for backend API routes that need admin privileges, like updating leads)
+# This is sensitive and should NOT be prefixed with NEXT_PUBLIC_
+SUPABASE_SERVICE_KEY=your_supabase_service_role_key 
+```
+
+**b) Python Worker (`python-worker/.env`)**
+
+Create a file named `.env` in the `python-worker/` directory with the following content:
+
+```env
+# Upstash Redis (Direct connection URL for the Python worker - use rediss:// for SSL)
+UPSTASH_REDIS_URL=rediss://default:your_password@your_host.upstash.io:your_port
+# UPSTASH_REDIS_PASSWORD=your_redis_password # Only if not part of the URL
+
+REDIS_MENTIONS_STREAM_KEY=mentions_stream # Must match the key used by the edge function
+REDIS_CONSUMER_GROUP_NAME=mentions_processor_group
+REDIS_CONSUMER_NAME_PREFIX=consumer_
+
+# Supabase (Backend Worker - service role key for admin operations)
+SUPABASE_URL=your_supabase_url # Should be the same as NEXT_PUBLIC_SUPABASE_URL
+SUPABASE_SERVICE_KEY=your_supabase_service_role_key # Should be the same as in flare-app/.env.local
+
+# OpenAI API (for sentiment analysis)
+OPENAI_API_KEY=your_openai_api_key
+OPENAI_MODEL_NAME=gpt-4o-mini # Or your preferred model
+```
+
+**Replace `your_...` placeholders with your actual credentials and URLs.**
+
+### 4. Supabase Setup
+
+- Ensure you have a Supabase project created.
+- Create a `mentions` table in your Supabase database with a schema similar to this (adjust as needed):
+  ```sql
+  create table public.mentions (
+    id bigint generated by default as identity not null,
+    inserted_at timestamp with time zone null default now(),
+    source text null,
+    keyword text null,
+    title text null,
+    url text null unique, -- Added unique constraint here
+    body text null,
+    sentiment_label text null,
+    sentiment_score real null,
+    note text null,
+    lead boolean null default false,
+    image_url text null,
+    published_at timestamp with time zone null,
+    raw_data jsonb null, -- Stores the original article data from NewsAPI
+    constraint mentions_pkey primary key (id)
+  );
+  ```
+- Enable Row Level Security (RLS) on the `mentions` table as appropriate for your application. For the frontend client (using anon key), you might want read-only access. For the backend worker and API routes (using service key), they will bypass RLS.
+
+---
+
+## ▶️ Running the Application
+
+Flare consists of two main parts that need to be run separately:
+
+**1. Next.js Frontend Application (Flare App)**
+
+Navigate to the Next.js app directory and run the development server:
+
+```bash
+cd apps/flare-app
+npm run dev
+```
+Or from the root, using Turborepo:
+```bash
+npm run dev --filter=flare-app
+# or if using pnpm: pnpm dev --filter=flare-app
+```
+This will typically start the frontend on `http://localhost:3000`.
+
+**2. Python Worker (Sentiment Analysis & Supabase Ingestion)**
+
+Open a new terminal window/tab. Navigate to the Python worker directory, ensure dependencies are installed (`pip install -r requirements.txt`), and run the FastAPI application using Uvicorn:
+
+```bash
+cd python-worker
+# Ensure you have a Python virtual environment set up and activated for this worker for best results.
+# pip install -r requirements.txt
+uvicorn main:app --reload --port 8000
+```
+This will start the worker, which will listen to the Redis stream for new mentions to process.
+
+---
+
+## ☁️ Deployment (Conceptual)
+
+-   **Frontend & Edge Functions (`apps/flare-app`):** Deploy to Vercel. Environment variables from `apps/flare-app/.env.local` (excluding `SUPABASE_SERVICE_KEY` if API routes are minimal) need to be set in Vercel project settings. `SUPABASE_SERVICE_KEY` *is* needed if API routes (like `/api/mentions/[id]`) perform privileged operations.
+-   **Python Worker (`python-worker`):** Deploy as a long-running service (e.g., on a platform like Google Cloud Run, AWS Fargate, DigitalOcean App Platform, or any VPS/server that can run Python). Environment variables from `python-worker/.env` must be configured in that deployment environment.
+
+---
+
+## 🏗️ Project Structure (Turborepo)
+
+```
+/Users/dim/Desktop/Spill Projects/Anora 
+├── apps
+│   ├── flare-app        # Next.js frontend and API routes
+│   └── ingestion-worker # Placeholder for potential future ingestion workers (not fully used yet)
+├── python-worker      # FastAPI Python worker for NLP and DB inserts
+├── package.json       # Root package.json with workspaces
+├── turbo.json         # Turborepo configuration
+└── README.md
+```
